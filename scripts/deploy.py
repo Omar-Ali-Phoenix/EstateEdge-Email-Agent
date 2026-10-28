@@ -387,7 +387,7 @@ def print_outputs_and_next_steps(outputs: dict, config: dict[str, str], region: 
     print(f"Stack {stack} deployed in {region}")
     print("=" * 70)
     labels = {
-        "WebUrl": "Web URL", "WebApiUrl": "Web API (Function URL behind /api)",
+        "WebUrl": "Web URL", "WebApiUrl": "Web API (HTTP API behind /api)",
         "InboundQueueUrl": "Inbound SQS queue URL", "InboundBucketName": "Inbound S3 bucket",
         "WebBucketName": "Web S3 bucket", "ReceiptRuleSetName": "SES receipt rule set",
         "IngestRoleArn": "Ingest role ARN", "WorkerRoleArn": "Worker role ARN",

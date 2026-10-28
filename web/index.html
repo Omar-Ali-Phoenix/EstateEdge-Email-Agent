@@ -1,0 +1,525 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Property Assistant — Property Inquiry</title>
+  <meta id="meta-description" name="description" content="Ask our assistant about properties. Describe what you're looking for and our AI emails you matching listings." />
+  <link rel="icon" href="/favicon.ico" sizes="any" />
+  <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700&family=Saira+Condensed:wght@500;600;700;800&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --brand-red: #b31e42;
+      --brand-red-deep: #931a38;
+      --brand-crimson: #831431;
+      --brand-core: #8a1030;
+      --brand-core-deep: #340a14;
+      --brand-orange: #f89a5b;
+      --brand-peach: #fccbb1;
+
+      --background: #f8f8f8;
+      --foreground: #3e0c18;
+      --card: #ffffff;
+      --primary: #b31e42;
+      --primary-foreground: #ffffff;
+      --muted: #f8f8f8;
+      --muted-foreground: #7c5f66;
+      --accent: #f89a5b;
+      --border: #e7e2e0;
+      --ring: #b31e42;
+
+      --font-body: "Montserrat", system-ui, sans-serif;
+      --font-display: "Saira Condensed", "Montserrat", sans-serif;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html, body { min-height: 100%; }
+
+    body {
+      font-family: var(--font-body);
+      color: var(--foreground);
+      background: var(--background);
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+      display: flex;
+      flex-direction: column;
+      min-height: 100vh;
+    }
+
+    a { color: inherit; }
+
+    header {
+      background: #ffffff;
+      border-bottom: 1px solid var(--border);
+      padding: 20px 24px;
+    }
+    .header-inner {
+      max-width: 1040px;
+      margin: 0 auto;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+    }
+    .brand { display: flex; align-items: center; }
+    .brand img {
+      height: clamp(56px, 9vw, 88px);
+      width: auto;
+      display: block;
+    }
+    .header-tag {
+      font-family: var(--font-display);
+      font-weight: 600;
+      font-size: 13px;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--brand-red);
+    }
+
+    .hero {
+      background: linear-gradient(135deg, var(--brand-crimson) 0%, var(--brand-red) 100%);
+      color: #fff;
+      padding: 56px 24px 72px;
+      text-align: center;
+    }
+    .hero h1 {
+      font-family: var(--font-display);
+      font-weight: 800;
+      font-size: clamp(32px, 6vw, 52px);
+      line-height: 1.05;
+      letter-spacing: 0.01em;
+      text-transform: uppercase;
+    }
+    .hero h1 .accent { color: var(--brand-orange); }
+    .hero p {
+      max-width: 620px;
+      margin: 18px auto 0;
+      font-size: clamp(15px, 2.5vw, 18px);
+      opacity: 0.92;
+    }
+
+    main {
+      flex: 1;
+      width: 100%;
+      max-width: 680px;
+      margin: -44px auto 0;
+      padding: 0 20px 64px;
+    }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      box-shadow: 0 20px 50px -24px rgba(52, 10, 20, 0.45);
+      padding: 32px clamp(20px, 5vw, 40px) 36px;
+    }
+    .card h2 {
+      font-family: var(--font-display);
+      font-weight: 700;
+      font-size: 24px;
+      text-transform: uppercase;
+      letter-spacing: 0.02em;
+      color: var(--brand-crimson);
+    }
+    .card .sub {
+      color: var(--muted-foreground);
+      font-size: 14px;
+      margin-top: 6px;
+      margin-bottom: 24px;
+    }
+
+    .field { margin-bottom: 20px; }
+    label {
+      display: block;
+      font-weight: 600;
+      font-size: 14px;
+      margin-bottom: 8px;
+    }
+    label .req { color: var(--brand-red); }
+
+    input[type="email"], input[type="text"], textarea {
+      width: 100%;
+      font-family: var(--font-body);
+      font-size: 15px;
+      color: var(--foreground);
+      background: #fff;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 13px 14px;
+      transition: border-color 0.15s, box-shadow 0.15s;
+    }
+    input::placeholder, textarea::placeholder { color: #b8a9ad; }
+    input:focus, textarea:focus {
+      outline: none;
+      border-color: var(--ring);
+      box-shadow: 0 0 0 3px rgba(179, 30, 66, 0.15);
+    }
+    textarea { resize: vertical; min-height: 130px; }
+
+    .hint { font-size: 12.5px; color: var(--muted-foreground); margin-top: 6px; }
+
+    .hp { position: absolute; left: -9999px; width: 1px; height: 1px; overflow: hidden; }
+
+    button {
+      width: 100%;
+      font-family: var(--font-display);
+      font-weight: 700;
+      font-size: 17px;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: #fff;
+      background: linear-gradient(135deg, var(--brand-red) 0%, var(--brand-core) 100%);
+      border: none;
+      border-radius: 10px;
+      padding: 15px 20px;
+      cursor: pointer;
+      transition: transform 0.08s, box-shadow 0.15s, opacity 0.15s;
+      box-shadow: 0 10px 24px -10px rgba(138, 16, 48, 0.6);
+    }
+    button:hover:not(:disabled) { transform: translateY(-1px); }
+    button:active:not(:disabled) { transform: translateY(0); }
+    button:disabled { opacity: 0.6; cursor: not-allowed; }
+
+    .status {
+      display: none;
+      margin-top: 20px;
+      border-radius: 10px;
+      padding: 16px 18px;
+      font-size: 14.5px;
+    }
+    .status.show { display: block; }
+    .status.ok {
+      background: #fff4ec;
+      border: 1px solid var(--brand-peach);
+      color: var(--brand-crimson);
+    }
+    .status.err {
+      background: #fdecef;
+      border: 1px solid #f3bcc8;
+      color: var(--brand-red-deep);
+    }
+    .status .answer {
+      margin-top: 12px;
+      padding-top: 12px;
+      border-top: 1px dashed var(--border);
+      white-space: pre-wrap;
+      color: var(--foreground);
+      font-size: 14px;
+    }
+
+    .results {
+      display: none;
+      margin-top: 24px;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      box-shadow: 0 20px 50px -24px rgba(52, 10, 20, 0.45);
+      overflow: hidden;
+    }
+    .results.show { display: block; }
+    .results-head {
+      background: linear-gradient(135deg, var(--brand-crimson) 0%, var(--brand-red) 100%);
+      color: #fff;
+      padding: 16px 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .results-head h3 {
+      font-family: var(--font-display);
+      font-weight: 700;
+      font-size: 20px;
+      letter-spacing: 0.02em;
+      text-transform: uppercase;
+    }
+    .results-head .emailed {
+      font-size: 12.5px;
+      opacity: 0.9;
+    }
+    .results-body {
+      padding: 22px clamp(18px, 4vw, 32px) 28px;
+      color: var(--foreground);
+      font-size: 15px;
+      line-height: 1.7;
+    }
+    .results-body h1, .results-body h2, .results-body h3, .results-body h4 {
+      font-family: var(--font-display);
+      font-weight: 700;
+      color: var(--brand-crimson);
+      margin: 18px 0 10px;
+      line-height: 1.25;
+    }
+    .results-body h3 { font-size: 19px; }
+    .results-body h4 { font-size: 16px; }
+    .results-body h1:first-child, .results-body h2:first-child,
+    .results-body h3:first-child, .results-body h4:first-child { margin-top: 0; }
+    .results-body p { margin: 10px 0; }
+    .results-body ol, .results-body ul { margin: 10px 0; padding-inline-start: 22px; }
+    .results-body li { margin: 6px 0; }
+    .results-body strong { color: var(--brand-core); font-weight: 700; }
+    .results-body a {
+      color: var(--brand-red);
+      font-weight: 600;
+      text-decoration: none;
+      border-bottom: 1px solid var(--brand-peach);
+    }
+    .results-body a:hover { border-bottom-color: var(--brand-red); }
+    .results-body hr { border: none; border-top: 1px solid var(--border); margin: 18px 0; }
+    .results-body.rtl { direction: rtl; text-align: right; }
+    .results-body.rtl ol, .results-body.rtl ul { padding-inline-start: 22px; }
+
+    .spinner {
+      display: inline-block;
+      width: 16px; height: 16px;
+      border: 2px solid rgba(255,255,255,0.5);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+      vertical-align: -3px;
+      margin-right: 8px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    footer {
+      background: var(--brand-core-deep);
+      color: #ffffffb0;
+      text-align: center;
+      padding: 22px 24px;
+      font-size: 13px;
+    }
+    footer strong { color: #fff; font-family: var(--font-display); letter-spacing: 0.04em; }
+    footer a { color: var(--brand-orange); text-decoration: none; }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="header-inner">
+      <div class="brand">
+        <img id="brand-logo" src="/logo.png" alt="Brand" />
+      </div>
+      <div class="header-tag" id="header-tag">Property Intelligence</div>
+    </div>
+  </header>
+
+  <section class="hero">
+    <h1 id="hero-title">Your property search, <span class="accent" id="hero-accent">answered</span></h1>
+    <p id="hero-text">Describe what you're after — area, budget, bedrooms, sale or rent — and our assistant emails you real, matching listings in minutes.</p>
+  </section>
+
+  <main>
+    <div class="card">
+      <h2 id="form-title">Ask our assistant</h2>
+      <p class="sub">Fill in your details and question. Your matching listings appear right here, and we email you a copy too.</p>
+
+      <form id="inquiry-form" novalidate>
+        <div class="field">
+          <label for="email">Your email <span class="req">*</span></label>
+          <input type="email" id="email" name="email" autocomplete="email"
+                 placeholder="you@example.com" required />
+          <div class="hint">We'll reply to this address with matching properties.</div>
+        </div>
+
+        <div class="field">
+          <label for="name">Your name</label>
+          <input type="text" id="name" name="name" autocomplete="name"
+                 placeholder="Optional" maxlength="80" />
+        </div>
+
+        <div class="field">
+          <label for="question">What are you looking for? <span class="req">*</span></label>
+          <textarea id="question" name="question" required maxlength="2000"
+                    placeholder="Describe the property you're looking for: area, budget, bedrooms, sale or rent."></textarea>
+          <div class="hint"><span id="charcount">0</span> / 2000 characters</div>
+        </div>
+
+        <div class="hp" aria-hidden="true">
+          <label>Company<input type="text" name="company" tabindex="-1" autocomplete="off" /></label>
+        </div>
+
+        <button type="submit" id="submit-btn">Get matching properties</button>
+      </form>
+
+      <div class="status" id="status"></div>
+    </div>
+
+    <div class="results" id="results">
+      <div class="results-head">
+        <h3>Matching properties</h3>
+        <span class="emailed" id="emailed-note"></span>
+      </div>
+      <div class="results-body" id="results-body"></div>
+    </div>
+  </main>
+
+  <footer id="page-footer"></footer>
+
+  <script src="/config.js" onerror="/* config.js missing — using generic defaults */"></script>
+  <script>
+    const CFG = window.ESTATEEDGE_CONFIG || {};
+    const BRAND = CFG.brandName || "Property Assistant";
+    const API_ENDPOINT = "/api";
+
+    // Apply branding that came from config.js, with generic fallbacks.
+    document.title = CFG.title || (BRAND + " — Property Inquiry");
+    const metaDesc = document.getElementById("meta-description");
+    if (metaDesc && CFG.description) metaDesc.setAttribute("content", CFG.description);
+    const logo = document.getElementById("brand-logo");
+    if (logo) { logo.alt = CFG.logoAlt || BRAND; }
+    const headerTag = document.getElementById("header-tag");
+    if (headerTag && CFG.headerTag) headerTag.textContent = CFG.headerTag;
+    const heroTitle = document.getElementById("hero-title");
+    if (heroTitle && CFG.heroTitle) {
+      heroTitle.innerHTML = escapeHtml(CFG.heroTitle) + " " +
+        '<span class="accent" id="hero-accent">' +
+        escapeHtml(CFG.heroAccent || "") + "</span>";
+    }
+    const heroText = document.getElementById("hero-text");
+    if (heroText && CFG.heroText) heroText.textContent = CFG.heroText;
+    const formTitle = document.getElementById("form-title");
+    if (formTitle && CFG.formTitle) formTitle.textContent = CFG.formTitle;
+    const submitBtn = document.getElementById("submit-btn");
+    if (submitBtn && CFG.submitLabel) submitBtn.textContent = CFG.submitLabel;
+    const questionBox = document.getElementById("question");
+    if (questionBox && CFG.exampleQuestion) questionBox.placeholder = CFG.exampleQuestion;
+    const footer = document.getElementById("page-footer");
+    if (footer && CFG.footerHtml) footer.innerHTML = CFG.footerHtml;
+
+    const form = document.getElementById("inquiry-form");
+    const btn = document.getElementById("submit-btn");
+    const statusEl = document.getElementById("status");
+    const question = document.getElementById("question");
+    const charcount = document.getElementById("charcount");
+    const resultsEl = document.getElementById("results");
+    const resultsBody = document.getElementById("results-body");
+    const emailedNote = document.getElementById("emailed-note");
+
+    question.addEventListener("input", () => {
+      charcount.textContent = question.value.length;
+    });
+
+    function showStatus(kind, html) {
+      statusEl.className = "status show " + kind;
+      statusEl.innerHTML = html;
+    }
+
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      statusEl.className = "status";
+      resultsEl.className = "results";
+
+      const email = document.getElementById("email").value.trim();
+      const name = document.getElementById("name").value.trim();
+      const q = question.value.trim();
+      const company = form.company.value; // honeypot
+
+      if (!email || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
+        showStatus("err", "Please enter a valid email address.");
+        return;
+      }
+      if (!q) {
+        showStatus("err", "Please describe what you're looking for.");
+        return;
+      }
+
+      btn.disabled = true;
+      const originalLabel = btn.textContent;
+      btn.innerHTML = '<span class="spinner"></span>Searching properties…';
+
+      try {
+        const payload = JSON.stringify({ email, name, question: q, company });
+        const resp = await fetch(API_ENDPOINT, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: payload,
+        });
+        const data = await resp.json().catch(() => ({}));
+
+        if (resp.ok && data.status === "sent") {
+          if (data.answer) {
+            resultsBody.className = "results-body" + (isRTL(data.answer) ? " rtl" : "");
+            resultsBody.innerHTML = renderMarkdown(data.answer);
+            emailedNote.textContent = "A copy has been emailed to " + email;
+            resultsEl.className = "results show";
+            showStatus("ok", "Here are your matching properties 👇 We've also emailed a copy to <strong>" +
+              escapeHtml(email) + "</strong>.");
+            resultsEl.scrollIntoView({ behavior: "smooth", block: "start" });
+          } else {
+            showStatus("ok", "Thanks! We've emailed your answer to <strong>" +
+              escapeHtml(email) + "</strong>. Please check your inbox.");
+          }
+          question.value = "";
+          charcount.textContent = "0";
+        } else if (resp.status === 403 && data.reason === "unverified_recipient") {
+          showStatus("err",
+            CFG.unverifiedMessage ||
+            ("This is a preview, so replies can only be sent to pre-approved email addresses."));
+        } else {
+          showStatus("err", (data.message || "Something went wrong. Please try again in a moment."));
+        }
+      } catch (err) {
+        showStatus("err", "We couldn't reach the service. Please try again in a moment.");
+      } finally {
+        btn.disabled = false;
+        btn.textContent = originalLabel;
+      }
+    });
+
+    function escapeHtml(s) {
+      return String(s).replace(/[&<>"']/g, c => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+      }[c]));
+    }
+
+    function isRTL(text) {
+      const ar = (text.match(/[\u0600-\u06FF]/g) || []).length;
+      const latin = (text.match(/[A-Za-z]/g) || []).length;
+      return ar > latin;
+    }
+
+    function renderMarkdown(md) {
+      const lines = String(md).replace(/\r\n/g, "\n").split("\n");
+      let html = "";
+      let listType = null;
+      const closeList = () => { if (listType) { html += "</" + listType + ">"; listType = null; } };
+      const inline = (s) => {
+        s = escapeHtml(s);
+        s = s.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+        s = s.replace(/__([^_]+)__/g, "<strong>$1</strong>");
+        s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,
+          '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+        return s;
+      };
+      for (let raw of lines) {
+        const line = raw.replace(/\s+$/,"");
+        if (!line.trim()) { closeList(); continue; }
+        let m;
+        if ((m = line.match(/^\s{0,3}(#{1,6})\s+(.*)$/))) {
+          closeList();
+          const lvl = Math.min(m[1].length, 4);
+          html += "<h" + lvl + ">" + inline(m[2]) + "</h" + lvl + ">";
+        } else if (/^\s{0,3}([-_*])\1{2,}\s*$/.test(line)) {
+          closeList();
+          html += "<hr>";
+        } else if ((m = line.match(/^\s*\d+[.)]\s+(.*)$/))) {
+          if (listType !== "ol") { closeList(); html += "<ol>"; listType = "ol"; }
+          html += "<li>" + inline(m[1]) + "</li>";
+        } else if ((m = line.match(/^\s*[-*•]\s+(.*)$/))) {
+          if (listType !== "ul") { closeList(); html += "<ul>"; listType = "ul"; }
+          html += "<li>" + inline(m[1]) + "</li>";
+        } else {
+          closeList();
+          html += "<p>" + inline(line.trim()) + "</p>";
+        }
+      }
+      closeList();
+      return html;
+    }
+  </script>
+</body>
+</html>

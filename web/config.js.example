@@ -1,0 +1,19 @@
+// Sample web/config.js — deploy.py writes the real one at deploy time.
+// Include this file only as a reference for the shape.
+window.ESTATEEDGE_CONFIG = {
+  brandName: "Property Assistant",
+  companyName: "Example Company",
+  companyUrl: "https://example.com",
+  currencyCode: "<your-currency-code>",
+  title: "Property Assistant — Property Inquiry",
+  description: "Ask Property Assistant about properties.",
+  headerTag: "Property Intelligence",
+  logoAlt: "Property Assistant",
+  heroTitle: "Your property search,",
+  heroAccent: "answered",
+  heroText: "Describe what you're after — area, budget, bedrooms, sale or rent — and Property Assistant emails you real, matching listings in minutes.",
+  formTitle: "Ask Property Assistant",
+  submitLabel: "Get matching properties",
+  unverifiedMessage: "This is a preview, so replies can only be sent to pre-approved email addresses.",
+  footerHtml: "<strong>Property Assistant</strong> — an AI solution. Built on AWS."
+};

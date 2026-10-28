@@ -1,0 +1,4 @@
+# Lambda dependencies bundled by `sam build`.
+# boto3 is provided by the Python 3.12 Lambda runtime, so it is not listed here.
+python-dotenv>=1.0.0
+strands-agents>=0.1.0

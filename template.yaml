@@ -488,13 +488,26 @@ Resources:
     Condition: CreateWeb
     Properties:
       FunctionName: !Sub '${AWS::StackName}-web-inquiry'
-      Description: Synchronous web inquiry handler (Function URL behind CloudFront)
+      Description: Synchronous web inquiry handler (HTTP API behind CloudFront)
       CodeUri: app/
       Handler: src.web_inquiry.lambda_handler
       Timeout: 60
       LoggingConfig:
         LogGroup: !Ref WebLogGroup
       Role: !GetAtt WebRole.Arn
+      Events:
+        ApiPost:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref WebHttpApi
+            Path: /api
+            Method: POST
+        ApiOptions:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref WebHttpApi
+            Path: /api
+            Method: OPTIONS
       Environment:
         Variables:
           BEDROCK_MODEL_ID: !Ref BedrockModelId
@@ -529,32 +542,21 @@ Resources:
             - !Sub 'https://${WebDomain}'
             - ''
 
-  WebFunctionUrl:
-    Type: AWS::Lambda::Url
+  # Web API is served by an HTTP API Gateway (not a public Lambda Function URL).
+  # Rationale: some AWS accounts/organizations block public Function URLs
+  # (AuthType: NONE), which makes the CloudFront -> Function URL /api path return
+  # 403. An HTTP API behind CloudFront works in restricted accounts and needs no
+  # OAC request signing. The web_inquiry handler accepts both the Function URL and
+  # API Gateway v2 (HTTP API) event shapes, so no application code change is needed.
+  WebHttpApi:
+    Type: AWS::Serverless::HttpApi
     Condition: CreateWeb
     Properties:
-      TargetFunctionArn: !GetAtt WebFunction.Arn
-      AuthType: NONE
-
-  WebFunctionUrlPermission:
-    Type: AWS::Lambda::Permission
-    Condition: CreateWeb
-    Properties:
-      FunctionName: !Ref WebFunction
-      Action: lambda:InvokeFunctionUrl
-      Principal: '*'
-      FunctionUrlAuthType: NONE
-
-  # Since Oct 2025 a public Function URL needs BOTH permissions (InvokeFunctionUrl
-  # above and InvokeFunction below, restricted to calls made through the URL).
-  WebFunctionUrlInvokePermission:
-    Type: AWS::Lambda::Permission
-    Condition: CreateWeb
-    Properties:
-      FunctionName: !Ref WebFunction
-      Action: lambda:InvokeFunction
-      Principal: '*'
-      InvokedViaFunctionUrl: true
+      StageName: $default
+      # CloudFront terminates TLS and forwards /api; the HTTP API is the origin.
+      DefaultRouteSettings:
+        ThrottlingBurstLimit: 50
+        ThrottlingRateLimit: 25
 
   # =====================================================================
   # CloudWatch log groups (30-day retention)
@@ -727,7 +729,7 @@ Resources:
               OriginAccessIdentity: ''
             OriginAccessControlId: !Ref WebOAC
           - Id: ApiOrigin
-            DomainName: !Select [2, !Split ['/', !GetAtt WebFunctionUrl.FunctionUrl]]
+            DomainName: !Sub '${WebHttpApi}.execute-api.${AWS::Region}.amazonaws.com'
             CustomOriginConfig:
               OriginProtocolPolicy: https-only
               OriginReadTimeout: 60
@@ -745,8 +747,11 @@ Resources:
           - PathPattern: /api*
             TargetOriginId: ApiOrigin
             ViewerProtocolPolicy: redirect-to-https
+            # CachingDisabled
             CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
-            OriginRequestPolicyId: 216adef6-5c7f-47e4-b989-5492eafa07d3
+            # AllViewerExceptHostHeader — forward everything EXCEPT Host, so API
+            # Gateway sees its own execute-api host and accepts the request.
+            OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac
             AllowedMethods: [GET, HEAD, OPTIONS, PUT, POST, PATCH, DELETE]
             CachedMethods: [GET, HEAD, OPTIONS]
             Compress: false
@@ -776,10 +781,10 @@ Outputs:
         - !Sub 'https://${WebDistribution.DomainName}'
       - 'web channel disabled'
   WebApiUrl:
-    Description: Function URL behind /api (do not call directly; CloudFront forwards /api to it)
+    Description: HTTP API endpoint behind /api (CloudFront forwards /api to it; call the site URL, not this directly)
     Value: !If
       - CreateWeb
-      - !GetAtt WebFunctionUrl.FunctionUrl
+      - !Sub 'https://${WebHttpApi}.execute-api.${AWS::Region}.amazonaws.com/api'
       - 'web channel disabled'
   WebBucketName:
     Description: S3 bucket holding the static site

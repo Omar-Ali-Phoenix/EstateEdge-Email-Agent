@@ -5,6 +5,7 @@ AGENT_ENGINE=bedrock           -> src/agent_bedrock.py  (raw Bedrock Converse lo
 If the Strands package cannot be imported, the Bedrock engine is used instead.
 """
 import logging
+import re
 
 from src.config import Config
 from src.memory import get_session_history, save_session_history
@@ -12,6 +13,29 @@ from src.prompt import FALLBACK_REPLY
 from src.email_sender import send_email
 
 logger = logging.getLogger(__name__)
+
+_ARABIC_RE = re.compile(r"[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF]")
+_LATIN_RE = re.compile(r"[A-Za-z]")
+
+
+def _language_directive(text: str) -> str:
+    """Return an explicit, per-message reply-language instruction.
+
+    The system prompt asks the model to match the customer's language, but across
+    a multi-turn history the model tends to stick with the language the thread
+    started in. Appending a deterministic directive to the CURRENT message - based
+    on its own script - makes the model switch when the customer switches.
+    Returns "" when the language is ambiguous (let the model decide).
+    """
+    ar = len(_ARABIC_RE.findall(text or ""))
+    latin = len(_LATIN_RE.findall(text or ""))
+    if ar > latin and ar > 0:
+        return ("\n\n[Reply in Arabic. The customer wrote this message in Arabic; "
+                "answer only in Arabic regardless of earlier messages.]")
+    if latin > ar and latin > 0:
+        return ("\n\n[Reply in English. The customer wrote this message in English; "
+                "answer only in English regardless of earlier messages.]")
+    return ""
 
 def _engine():
     """Return the module whose run(customer_email, history, text) answers one message."""
@@ -43,7 +67,11 @@ def run_agent_loop(customer_email: str, user_text: str, send_reply: bool = True,
     maxReceiveCount) the message reaches the DLQ.
     """
     history = get_session_history(customer_email)
-    final_text = _engine().run(customer_email, list(history), user_text)
+    # Append a deterministic reply-language directive to the message the model
+    # sees (not to what we store), so the agent follows the CURRENT message's
+    # language even when earlier turns were in a different language.
+    model_text = user_text + _language_directive(user_text)
+    final_text = _engine().run(customer_email, list(history), model_text)
 
     if not final_text:
         final_text = FALLBACK_REPLY

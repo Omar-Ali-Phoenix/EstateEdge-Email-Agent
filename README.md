@@ -1,4 +1,4 @@
-# EstateEdge — AI Real-Estate Assistant on AWS
+# EstateEdge - Real Estate Email Agent
 
 A "chat with your data" assistant for real-estate listings, on AWS, built by
 Phoenix. Customers reach it by **email** or through a **web inquiry page**. An

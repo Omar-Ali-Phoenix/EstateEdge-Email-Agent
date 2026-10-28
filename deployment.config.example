@@ -1,0 +1,147 @@
+# =====================================================================
+# EstateEdge deployment configuration
+#
+# Copy this file to deployment.config, fill in the values, then run:
+#
+#     python scripts/deploy.py --dry-run
+#     python scripts/deploy.py
+#
+# Format: KEY=value, one per line, '#' starts a comment.
+#
+# NEVER put passwords, access keys or tokens in this file.
+#   - The database password lives in AWS Secrets Manager.
+#   - AWS credentials come from your CLI profile (AWS_PROFILE / aws configure).
+#
+# Anything still shaped like <...> makes the script stop.
+# =====================================================================
+
+# ---------------------------------------------------------------------
+# AWS account and region
+# ---------------------------------------------------------------------
+# Region to deploy into. Must be a region that supports SES email receiving
+# and that has your Bedrock model. Must match the region of your Aurora cluster.
+AWS_REGION=<aws-region>
+
+# Optional: AWS CLI profile name. Leave blank to use the default credentials.
+AWS_PROFILE=
+
+# CloudFormation stack name. Also the prefix of every resource the template
+# creates (lowercase letters, digits and hyphens only, max 20 characters).
+STACK_NAME=<stack-name>
+
+# ---------------------------------------------------------------------
+# Email channel (SES)
+# ---------------------------------------------------------------------
+# Domain SES sends from and receives for, e.g. mail.example.com.
+EMAIL_DOMAIN=<mail.your-domain.com>
+
+# From address for outgoing replies. Must be inside EMAIL_DOMAIN.
+SES_SENDER=<agent@mail.your-domain.com>
+
+# Optional display name on outgoing email.
+SES_SENDER_NAME=
+
+# Optional SES configuration set name to attach to outgoing email.
+SES_CONFIGURATION_SET=
+
+# Address that receives qualified-lead hand-offs.
+# Must be an SES-verified identity while your account is in the SES sandbox.
+SALES_TEAM_EMAIL=<sales@your-company.com>
+
+# Set to false if the SES domain identity for EMAIL_DOMAIN already exists.
+CREATE_SES_DOMAIN_IDENTITY=true
+
+# Set to true to activate the SES receipt rule set without asking (only one
+# rule set can be active per region and account; activating replaces the
+# current one).
+ACTIVATE_RECEIPT_RULE_SET=
+
+# ---------------------------------------------------------------------
+# Agent (Bedrock + Aurora)
+# ---------------------------------------------------------------------
+# Bedrock model ID or inference-profile ID. The regional prefix (eu., us.,
+# apac.) must match your region group, and the model must be available there.
+BEDROCK_MODEL_ID=<model-or-inference-profile-id>
+
+# Aurora cluster ARN (RDS Data API enabled, same region as AWS_REGION).
+DATA_API_CLUSTER_ARN=arn:aws:rds:<aws-region>:<db-account-id>:cluster:<cluster-name>
+
+# Secrets Manager ARN holding the read-only DB user's username and password.
+DATA_API_SECRET_ARN=arn:aws:secretsmanager:<aws-region>:<db-account-id>:secret:<secret-name>
+
+# Cross-account only: IAM role to assume in the database account.
+# Leave blank for a same-account database (the template adds the Data API
+# permissions directly to the Lambda roles).
+DATA_API_ROLE_ARN=
+
+# Optional external ID for the cross-account role (treated as sensitive).
+DATA_API_EXTERNAL_ID=
+
+# Aurora database name.
+DB_NAME=<database-name>
+
+# The customer-safe view the agent may query (letters, digits, underscore only).
+DB_TABLE=<view_name>
+
+# ---------------------------------------------------------------------
+# Database SQL template (only used to render build/create_public_view.sql)
+# ---------------------------------------------------------------------
+# Your base table behind the view.
+SOURCE_TABLE=<base_table_name>
+
+# The read-only DB user that will be granted SELECT on the view.
+READONLY_DB_USER=<readonly_db_user>
+
+# ---------------------------------------------------------------------
+# Agent behaviour
+# ---------------------------------------------------------------------
+# strands (Strands Agents SDK, bundled via requirements.txt) or bedrock
+# (plain boto3). If Strands cannot be imported at runtime the code falls
+# back to the bedrock engine automatically.
+AGENT_ENGINE=strands
+
+BRAND_NAME=Property Assistant
+COMPANY_NAME=
+COMPANY_URL=
+# REQUIRED. 3-letter currency code used for every price the agent quotes (for example USD, EUR, AED).
+CURRENCY_CODE=<currency-code>
+# Optional extra language instruction, e.g. "Arabic (Egyptian Arabic is fine), English, or a mix".
+# Blank = reply in whatever language the customer writes in.
+LANGUAGE_HINT=
+
+# Optional customer-facing texts (blank = built-in English text).
+REPLY_TECHNICAL_ERROR=
+REPLY_RATE_LIMITED=
+REPLY_TOO_LONG=
+
+# Optional web page copy (blank = generic text built from BRAND_NAME).
+WEB_HEADLINE=
+WEB_HEADLINE_ACCENT=
+WEB_INTRO=
+WEB_SUBMIT_LABEL=
+# Example shown inside the question box, e.g. "A 3-bedroom apartment for sale, budget up to 500,000".
+WEB_EXAMPLE_QUESTION=
+
+RATE_LIMIT_PER_HOUR=40
+RATE_LIMIT_PER_DAY=150
+MAX_MESSAGE_CHARS=4000
+
+# ---------------------------------------------------------------------
+# Web channel (CloudFront + Function URL)
+# ---------------------------------------------------------------------
+# Set to false to deploy the email channel only.
+ENABLE_WEB_CHANNEL=true
+
+# Custom web address (leave blank to use the default CloudFront domain).
+WEB_DOMAIN=
+
+# ACM certificate for WEB_DOMAIN. Must be in us-east-1 (CloudFront requirement).
+WEB_CERTIFICATE_ARN=
+
+# Optional: if set, DKIM, MX and web-alias DNS records are created for you.
+# Otherwise the deploy script prints the records to add manually.
+ROUTE53_HOSTED_ZONE_ID=
+
+# While in the SES sandbox the web form can only reply to SES-verified
+# addresses. Set to false after SES production access.
+WEB_REQUIRE_VERIFIED_RECIPIENT=true

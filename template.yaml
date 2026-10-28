@@ -1,0 +1,852 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  EstateEdge - AI real-estate assistant on AWS.
+  Email channel (SES + S3 + SQS FIFO + Lambda) and web channel
+  (CloudFront + Lambda Function URL + S3). The agent runs on Amazon Bedrock
+  and queries Aurora MySQL through the RDS Data API.
+
+Parameters:
+  EmailDomain:
+    Type: String
+    Description: Domain SES sends from and receives for, e.g. mail.example.com
+  SesSender:
+    Type: String
+    Description: From address for outgoing email (must be inside EmailDomain)
+  SesSenderName:
+    Type: String
+    Default: ''
+  SesConfigurationSet:
+    Type: String
+    Default: ''
+  SalesTeamEmail:
+    Type: String
+    Description: Recipient of qualified-lead hand-offs
+  BedrockModelId:
+    Type: String
+    Description: Bedrock model ID or inference-profile ARN
+  DataApiClusterArn:
+    Type: String
+  DataApiSecretArn:
+    Type: String
+  DataApiRoleArn:
+    Type: String
+    Default: ''
+    Description: Cross-account Aurora role to assume. Blank means same account.
+  DataApiExternalId:
+    Type: String
+    Default: ''
+    NoEcho: true
+  DbName:
+    Type: String
+  DbTable:
+    Type: String
+    AllowedPattern: '[A-Za-z0-9_]+'
+  BrandName:
+    Type: String
+    Default: Property Assistant
+  CompanyName:
+    Type: String
+    Default: ''
+  CompanyUrl:
+    Type: String
+    Default: ''
+  CurrencyCode:
+    Type: String
+    Description: ISO 4217 currency code for all prices, for example USD. Required, no default.
+    AllowedPattern: '^[A-Za-z]{3}$'
+    ConstraintDescription: Use a 3-letter currency code.
+  LanguageHint:
+    Type: String
+    Default: ''
+  ReplyTechnicalError:
+    Type: String
+    Default: ''
+    Description: Customer-facing text when the agent fails. Blank = built-in English text.
+  ReplyRateLimited:
+    Type: String
+    Default: ''
+    Description: Auto-reply when a sender hits the rate limit. Blank = built-in English text.
+  ReplyTooLong:
+    Type: String
+    Default: ''
+    Description: Auto-reply when a message is too long. Blank = built-in English text.
+  AgentEngine:
+    Type: String
+    Default: strands
+    AllowedValues: [strands, bedrock]
+  EnableWebChannel:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+  WebDomain:
+    Type: String
+    Default: ''
+  WebCertificateArn:
+    Type: String
+    Default: ''
+  Route53HostedZoneId:
+    Type: String
+    Default: ''
+  CreateSesDomainIdentity:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+  WebRequireVerifiedRecipient:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+  RateLimitPerHour:
+    Type: String
+    Default: '40'
+  RateLimitPerDay:
+    Type: String
+    Default: '150'
+  MaxMessageChars:
+    Type: String
+    Default: '4000'
+
+Conditions:
+  CreateWeb: !Equals [!Ref EnableWebChannel, 'true']
+  CreateSesIdentity: !Equals [!Ref CreateSesDomainIdentity, 'true']
+  HasDataApiRole: !Not [!Equals [!Ref DataApiRoleArn, '']]
+  NotHasDataApiRole: !Equals [!Ref DataApiRoleArn, '']
+  HasWebDomain: !And
+    - !Condition CreateWeb
+    - !Not [!Equals [!Ref WebDomain, '']]
+  HasRoute53: !And
+    - !Condition HasWebDomain
+    - !Not [!Equals [!Ref Route53HostedZoneId, '']]
+  CanCreateDns: !Not [!Equals [!Ref Route53HostedZoneId, '']]
+  CreateDkimDns: !And
+    - !Condition CanCreateDns
+    - !Condition CreateSesIdentity
+  BedrockIdIsArn: !Equals [!Select [0, !Split [':', !Ref BedrockModelId]], 'arn']
+
+Globals:
+  Function:
+    Runtime: python3.12
+    Architectures: [x86_64]
+    MemorySize: 512
+    Tracing: PassThrough
+
+Resources:
+  # =====================================================================
+  # Messaging: SQS FIFO + DLQ
+  # =====================================================================
+  InboundDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub '${AWS::StackName}-inbound-dlq.fifo'
+      FifoQueue: true
+      MessageRetentionPeriod: 1209600
+      SqsManagedSseEnabled: true
+
+  InboundQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub '${AWS::StackName}-inbound.fifo'
+      FifoQueue: true
+      VisibilityTimeout: 1080
+      MessageRetentionPeriod: 1209600
+      SqsManagedSseEnabled: true
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt InboundDLQ.Arn
+        maxReceiveCount: 3
+
+  # =====================================================================
+  # DynamoDB: sessions + leads
+  # =====================================================================
+  SessionsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${AWS::StackName}-sessions'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: customer_email
+          AttributeType: S
+      KeySchema:
+        - AttributeName: customer_email
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: expires_at
+        Enabled: true
+      SSESpecification:
+        SSEEnabled: true
+
+  LeadsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${AWS::StackName}-leads'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: customer_email
+          AttributeType: S
+      KeySchema:
+        - AttributeName: customer_email
+          KeyType: HASH
+      SSESpecification:
+        SSEEnabled: true
+
+  # =====================================================================
+  # S3: inbound email + web site
+  # =====================================================================
+  InboundBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${AWS::StackName}-inbound-${AWS::AccountId}'
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireInboundEmails
+            Status: Enabled
+            Prefix: inbox/
+            ExpirationInDays: 30
+
+  InboundBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref InboundBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowSESPublish
+            Effect: Allow
+            Principal:
+              Service: ses.amazonaws.com
+            Action: s3:PutObject
+            Resource: !Sub '${InboundBucket.Arn}/*'
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+
+  WebBucket:
+    Type: AWS::S3::Bucket
+    Condition: CreateWeb
+    Properties:
+      BucketName: !Sub '${AWS::StackName}-web-${AWS::AccountId}'
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+
+  # =====================================================================
+  # IAM roles
+  # =====================================================================
+  IngestRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+      Policies:
+        - PolicyName: IngestPermissions
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: sqs:SendMessage
+                Resource: !GetAtt InboundQueue.Arn
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:GetItem
+                  - dynamodb:DeleteItem
+                Resource: !GetAtt SessionsTable.Arn
+
+  WorkerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+      Policies:
+        - PolicyName: WorkerPermissions
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                Resource: !GetAtt InboundQueue.Arn
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:GetItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:DeleteItem
+                  - dynamodb:Query
+                Resource:
+                  - !GetAtt SessionsTable.Arn
+                  - !GetAtt LeadsTable.Arn
+              - Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                  - bedrock:InvokeModelWithResponseStream
+                Resource:
+                  - !If
+                    - BedrockIdIsArn
+                    - !Ref BedrockModelId
+                    - !Sub 'arn:${AWS::Partition}:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/${BedrockModelId}'
+                  - !Sub 'arn:${AWS::Partition}:bedrock:*::foundation-model/*'
+              - Effect: Allow
+                Action: s3:GetObject
+                Resource: !Sub '${InboundBucket.Arn}/inbox/*'
+              - Effect: Allow
+                Action:
+                  - ses:SendEmail
+                  - ses:SendRawEmail
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:identity/${EmailDomain}'
+                  - !Sub 'arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:identity/${SalesTeamEmail}'
+              - !If
+                - HasDataApiRole
+                - Effect: Allow
+                  Action: sts:AssumeRole
+                  Resource: !Ref DataApiRoleArn
+                - !Ref AWS::NoValue
+              - !If
+                - NotHasDataApiRole
+                - Effect: Allow
+                  Action: rds-data:ExecuteStatement
+                  Resource: !Ref DataApiClusterArn
+                - !Ref AWS::NoValue
+              - !If
+                - NotHasDataApiRole
+                - Effect: Allow
+                  Action: secretsmanager:GetSecretValue
+                  Resource: !Ref DataApiSecretArn
+                - !Ref AWS::NoValue
+
+  WebRole:
+    Type: AWS::IAM::Role
+    Condition: CreateWeb
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+      Policies:
+        - PolicyName: WebPermissions
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:GetItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:DeleteItem
+                  - dynamodb:Query
+                Resource:
+                  - !GetAtt SessionsTable.Arn
+                  - !GetAtt LeadsTable.Arn
+              - Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                  - bedrock:InvokeModelWithResponseStream
+                Resource:
+                  - !If
+                    - BedrockIdIsArn
+                    - !Ref BedrockModelId
+                    - !Sub 'arn:${AWS::Partition}:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/${BedrockModelId}'
+                  - !Sub 'arn:${AWS::Partition}:bedrock:*::foundation-model/*'
+              - Effect: Allow
+                Action:
+                  - ses:SendEmail
+                  - ses:SendRawEmail
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:identity/${EmailDomain}'
+                  - !Sub 'arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:identity/${SalesTeamEmail}'
+              - Effect: Allow
+                Action: ses:GetEmailIdentity
+                Resource: !Sub 'arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:identity/*'
+              - !If
+                - HasDataApiRole
+                - Effect: Allow
+                  Action: sts:AssumeRole
+                  Resource: !Ref DataApiRoleArn
+                - !Ref AWS::NoValue
+              - !If
+                - NotHasDataApiRole
+                - Effect: Allow
+                  Action: rds-data:ExecuteStatement
+                  Resource: !Ref DataApiClusterArn
+                - !Ref AWS::NoValue
+              - !If
+                - NotHasDataApiRole
+                - Effect: Allow
+                  Action: secretsmanager:GetSecretValue
+                  Resource: !Ref DataApiSecretArn
+                - !Ref AWS::NoValue
+
+  # =====================================================================
+  # Lambda functions
+  # =====================================================================
+  IngestFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-email-ingest'
+      Description: SES email ingest - screens, de-dupes and enqueues inbound mail
+      CodeUri: app/
+      Handler: src.email_ingest.lambda_handler
+      Timeout: 30
+      LoggingConfig:
+        LogGroup: !Ref IngestLogGroup
+      Role: !GetAtt IngestRole.Arn
+      Environment:
+        Variables:
+          SES_SENDER: !Ref SesSender
+          QUEUE_URL: !Ref InboundQueue
+          INBOUND_BUCKET: !Ref InboundBucket
+          INBOUND_PREFIX: 'inbox/'
+          DYNAMODB_SESSION_TABLE: !Ref SessionsTable
+          DYNAMODB_KEY_ATTR: customer_email
+
+  WorkerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-email-worker'
+      Description: SQS-triggered worker that runs the agent and sends the reply
+      CodeUri: app/
+      Handler: src.worker.lambda_handler
+      Timeout: 180
+      LoggingConfig:
+        LogGroup: !Ref WorkerLogGroup
+      Role: !GetAtt WorkerRole.Arn
+      Environment:
+        Variables:
+          BEDROCK_MODEL_ID: !Ref BedrockModelId
+          AGENT_ENGINE: !Ref AgentEngine
+          DB_MODE: data_api
+          DATA_API_CLUSTER_ARN: !Ref DataApiClusterArn
+          DATA_API_SECRET_ARN: !Ref DataApiSecretArn
+          DATA_API_ROLE_ARN: !Ref DataApiRoleArn
+          DATA_API_EXTERNAL_ID: !Ref DataApiExternalId
+          DB_NAME: !Ref DbName
+          DB_TABLE: !Ref DbTable
+          SES_SENDER: !Ref SesSender
+          SES_SENDER_NAME: !Ref SesSenderName
+          SES_CONFIGURATION_SET: !Ref SesConfigurationSet
+          SES_API: sesv2
+          SALES_TEAM_EMAIL: !Ref SalesTeamEmail
+          INBOUND_BUCKET: !Ref InboundBucket
+          INBOUND_PREFIX: 'inbox/'
+          DYNAMODB_SESSION_TABLE: !Ref SessionsTable
+          DYNAMODB_LEADS_TABLE: !Ref LeadsTable
+          DYNAMODB_KEY_ATTR: customer_email
+          BRAND_NAME: !Ref BrandName
+          CURRENCY_CODE: !Ref CurrencyCode
+          LANGUAGE_HINT: !Ref LanguageHint
+          REPLY_TECHNICAL_ERROR: !Ref ReplyTechnicalError
+          REPLY_RATE_LIMITED: !Ref ReplyRateLimited
+          REPLY_TOO_LONG: !Ref ReplyTooLong
+          RATE_LIMIT_PER_HOUR: !Ref RateLimitPerHour
+          RATE_LIMIT_PER_DAY: !Ref RateLimitPerDay
+          MAX_MESSAGE_CHARS: !Ref MaxMessageChars
+      Events:
+        SQSEvent:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt InboundQueue.Arn
+            BatchSize: 1
+
+  WebFunction:
+    Type: AWS::Serverless::Function
+    Condition: CreateWeb
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-web-inquiry'
+      Description: Synchronous web inquiry handler (Function URL behind CloudFront)
+      CodeUri: app/
+      Handler: src.web_inquiry.lambda_handler
+      Timeout: 60
+      LoggingConfig:
+        LogGroup: !Ref WebLogGroup
+      Role: !GetAtt WebRole.Arn
+      Environment:
+        Variables:
+          BEDROCK_MODEL_ID: !Ref BedrockModelId
+          AGENT_ENGINE: !Ref AgentEngine
+          DB_MODE: data_api
+          DATA_API_CLUSTER_ARN: !Ref DataApiClusterArn
+          DATA_API_SECRET_ARN: !Ref DataApiSecretArn
+          DATA_API_ROLE_ARN: !Ref DataApiRoleArn
+          DATA_API_EXTERNAL_ID: !Ref DataApiExternalId
+          DB_NAME: !Ref DbName
+          DB_TABLE: !Ref DbTable
+          SES_SENDER: !Ref SesSender
+          SES_SENDER_NAME: !Ref SesSenderName
+          SES_CONFIGURATION_SET: !Ref SesConfigurationSet
+          SES_API: sesv2
+          SALES_TEAM_EMAIL: !Ref SalesTeamEmail
+          DYNAMODB_SESSION_TABLE: !Ref SessionsTable
+          DYNAMODB_LEADS_TABLE: !Ref LeadsTable
+          DYNAMODB_KEY_ATTR: customer_email
+          BRAND_NAME: !Ref BrandName
+          CURRENCY_CODE: !Ref CurrencyCode
+          LANGUAGE_HINT: !Ref LanguageHint
+          REPLY_TECHNICAL_ERROR: !Ref ReplyTechnicalError
+          REPLY_RATE_LIMITED: !Ref ReplyRateLimited
+          REPLY_TOO_LONG: !Ref ReplyTooLong
+          RATE_LIMIT_PER_HOUR: !Ref RateLimitPerHour
+          RATE_LIMIT_PER_DAY: !Ref RateLimitPerDay
+          MAX_MESSAGE_CHARS: !Ref MaxMessageChars
+          WEB_REQUIRE_VERIFIED_RECIPIENT: !Ref WebRequireVerifiedRecipient
+          WEB_ALLOWED_ORIGIN: !If
+            - HasWebDomain
+            - !Sub 'https://${WebDomain}'
+            - ''
+
+  WebFunctionUrl:
+    Type: AWS::Lambda::Url
+    Condition: CreateWeb
+    Properties:
+      TargetFunctionArn: !GetAtt WebFunction.Arn
+      AuthType: NONE
+
+  WebFunctionUrlPermission:
+    Type: AWS::Lambda::Permission
+    Condition: CreateWeb
+    Properties:
+      FunctionName: !Ref WebFunction
+      Action: lambda:InvokeFunctionUrl
+      Principal: '*'
+      FunctionUrlAuthType: NONE
+
+  # Since Oct 2025 a public Function URL needs BOTH permissions (InvokeFunctionUrl
+  # above and InvokeFunction below, restricted to calls made through the URL).
+  WebFunctionUrlInvokePermission:
+    Type: AWS::Lambda::Permission
+    Condition: CreateWeb
+    Properties:
+      FunctionName: !Ref WebFunction
+      Action: lambda:InvokeFunction
+      Principal: '*'
+      InvokedViaFunctionUrl: true
+
+  # =====================================================================
+  # CloudWatch log groups (30-day retention)
+  # =====================================================================
+  IngestLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${AWS::StackName}-email-ingest'
+      RetentionInDays: 30
+
+  WorkerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${AWS::StackName}-email-worker'
+      RetentionInDays: 30
+
+  WebLogGroup:
+    Type: AWS::Logs::LogGroup
+    Condition: CreateWeb
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${AWS::StackName}-web-inquiry'
+      RetentionInDays: 30
+
+  # =====================================================================
+  # SES: domain identity, receipt rule set
+  # =====================================================================
+  SesDomainIdentity:
+    Type: AWS::SES::EmailIdentity
+    Condition: CreateSesIdentity
+    Properties:
+      EmailIdentity: !Ref EmailDomain
+
+  ReceiptRuleSet:
+    Type: AWS::SES::ReceiptRuleSet
+    Properties:
+      RuleSetName: !Sub '${AWS::StackName}-inbound'
+
+  ReceiptRule:
+    Type: AWS::SES::ReceiptRule
+    DependsOn:
+      - InboundBucketPolicy
+      - IngestFunctionSesPermission
+    Properties:
+      RuleSetName: !Ref ReceiptRuleSet
+      Rule:
+        Name: !Sub '${AWS::StackName}-inbound-rule'
+        Enabled: true
+        ScanEnabled: true
+        Recipients:
+          - !Ref EmailDomain
+        Actions:
+          - S3Action:
+              BucketName: !Ref InboundBucket
+              ObjectKeyPrefix: 'inbox/'
+          - LambdaAction:
+              FunctionArn: !GetAtt IngestFunction.Arn
+              InvocationType: Event
+
+  IngestFunctionSesPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref IngestFunction
+      Action: lambda:InvokeFunction
+      Principal: ses.amazonaws.com
+      SourceAccount: !Ref AWS::AccountId
+
+  # =====================================================================
+  # Route 53 (optional): DKIM, MX, web alias
+  # =====================================================================
+  DkimRecord1:
+    Type: AWS::Route53::RecordSet
+    Condition: CreateDkimDns
+    Properties:
+      HostedZoneId: !Ref Route53HostedZoneId
+      Name: !GetAtt SesDomainIdentity.DkimDNSTokenName1
+      Type: CNAME
+      TTL: '1800'
+      ResourceRecords:
+        - !GetAtt SesDomainIdentity.DkimDNSTokenValue1
+
+  DkimRecord2:
+    Type: AWS::Route53::RecordSet
+    Condition: CreateDkimDns
+    Properties:
+      HostedZoneId: !Ref Route53HostedZoneId
+      Name: !GetAtt SesDomainIdentity.DkimDNSTokenName2
+      Type: CNAME
+      TTL: '1800'
+      ResourceRecords:
+        - !GetAtt SesDomainIdentity.DkimDNSTokenValue2
+
+  DkimRecord3:
+    Type: AWS::Route53::RecordSet
+    Condition: CreateDkimDns
+    Properties:
+      HostedZoneId: !Ref Route53HostedZoneId
+      Name: !GetAtt SesDomainIdentity.DkimDNSTokenName3
+      Type: CNAME
+      TTL: '1800'
+      ResourceRecords:
+        - !GetAtt SesDomainIdentity.DkimDNSTokenValue3
+
+  MxRecord:
+    Type: AWS::Route53::RecordSet
+    Condition: CanCreateDns
+    Properties:
+      HostedZoneId: !Ref Route53HostedZoneId
+      Name: !Ref EmailDomain
+      Type: MX
+      TTL: '1800'
+      ResourceRecords:
+        - !Sub '10 inbound-smtp.${AWS::Region}.amazonaws.com'
+
+  # =====================================================================
+  # CloudFront: static site + /api route to the Function URL
+  # =====================================================================
+  WebOAC:
+    Type: AWS::CloudFront::OriginAccessControl
+    Condition: CreateWeb
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub '${AWS::StackName}-web-oac'
+        Description: OAC for the EstateEdge web bucket
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  WebBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Condition: CreateWeb
+    Properties:
+      Bucket: !Ref WebBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowCloudFrontRead
+            Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub '${WebBucket.Arn}/*'
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub 'arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${WebDistribution}'
+
+  WebDistribution:
+    Type: AWS::CloudFront::Distribution
+    Condition: CreateWeb
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        DefaultRootObject: index.html
+        HttpVersion: http2and3
+        PriceClass: PriceClass_100
+        IPV6Enabled: true
+        ViewerCertificate: !If
+          - HasWebDomain
+          - AcmCertificateArn: !Ref WebCertificateArn
+            SslSupportMethod: sni-only
+            MinimumProtocolVersion: TLSv1.2_2021
+          - CloudFrontDefaultCertificate: true
+        Aliases: !If
+          - HasWebDomain
+          - - !Ref WebDomain
+          - !Ref AWS::NoValue
+        Origins:
+          - Id: WebOrigin
+            DomainName: !GetAtt WebBucket.RegionalDomainName
+            S3OriginConfig:
+              OriginAccessIdentity: ''
+            OriginAccessControlId: !Ref WebOAC
+          - Id: ApiOrigin
+            DomainName: !Select [2, !Split ['/', !GetAtt WebFunctionUrl.FunctionUrl]]
+            CustomOriginConfig:
+              OriginProtocolPolicy: https-only
+              OriginReadTimeout: 60
+              HTTPSPort: 443
+              OriginSSLProtocols:
+                - TLSv1.2
+        DefaultCacheBehavior:
+          TargetOriginId: WebOrigin
+          ViewerProtocolPolicy: redirect-to-https
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+          Compress: true
+          AllowedMethods: [GET, HEAD, OPTIONS]
+          CachedMethods: [GET, HEAD]
+        CacheBehaviors:
+          - PathPattern: /api*
+            TargetOriginId: ApiOrigin
+            ViewerProtocolPolicy: redirect-to-https
+            CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
+            OriginRequestPolicyId: 216adef6-5c7f-47e4-b989-5492eafa07d3
+            AllowedMethods: [GET, HEAD, OPTIONS, PUT, POST, PATCH, DELETE]
+            CachedMethods: [GET, HEAD, OPTIONS]
+            Compress: false
+
+  WebAliasRecord:
+    Type: AWS::Route53::RecordSet
+    Condition: HasRoute53
+    Properties:
+      HostedZoneId: !Ref Route53HostedZoneId
+      Name: !Ref WebDomain
+      Type: A
+      AliasTarget:
+        DNSName: !GetAtt WebDistribution.DomainName
+        HostedZoneId: Z2FDTNDATAQYW2
+
+# =====================================================================
+# Outputs (deploy.py prints these and uses some for post-deploy steps)
+# =====================================================================
+Outputs:
+  WebUrl:
+    Description: Public web URL
+    Value: !If
+      - CreateWeb
+      - !If
+        - HasWebDomain
+        - !Sub 'https://${WebDomain}'
+        - !Sub 'https://${WebDistribution.DomainName}'
+      - 'web channel disabled'
+  WebApiUrl:
+    Description: Function URL behind /api (do not call directly; CloudFront forwards /api to it)
+    Value: !If
+      - CreateWeb
+      - !GetAtt WebFunctionUrl.FunctionUrl
+      - 'web channel disabled'
+  WebBucketName:
+    Description: S3 bucket holding the static site
+    Value: !If
+      - CreateWeb
+      - !Ref WebBucket
+      - 'web channel disabled'
+  WebDistributionId:
+    Description: CloudFront distribution ID (used for cache invalidation)
+    Value: !If
+      - CreateWeb
+      - !Ref WebDistribution
+      - 'web channel disabled'
+  InboundQueueUrl:
+    Description: SQS FIFO queue URL
+    Value: !Ref InboundQueue
+  InboundBucketName:
+    Description: S3 bucket receiving raw inbound mail
+    Value: !Ref InboundBucket
+  ReceiptRuleSetName:
+    Description: SES receipt rule set name (activate it manually or via deploy.py)
+    Value: !Ref ReceiptRuleSet
+  IngestRoleArn:
+    Description: ARN of the ingest Lambda role
+    Value: !GetAtt IngestRole.Arn
+  WorkerRoleArn:
+    Description: ARN of the worker Lambda role
+    Value: !GetAtt WorkerRole.Arn
+  WebInquiryRoleArn:
+    Description: ARN of the web inquiry Lambda role
+    Value: !If
+      - CreateWeb
+      - !GetAtt WebRole.Arn
+      - 'web channel disabled'
+  DkimRecord1Name:
+    Description: DKIM CNAME 1 name (add as a CNAME to the value below)
+    Value: !If
+      - CreateSesIdentity
+      - !GetAtt SesDomainIdentity.DkimDNSTokenName1
+      - 'identity already exists'
+  DkimRecord1Value:
+    Value: !If
+      - CreateSesIdentity
+      - !GetAtt SesDomainIdentity.DkimDNSTokenValue1
+      - 'identity already exists'
+  DkimRecord2Name:
+    Description: DKIM CNAME 2 name
+    Value: !If
+      - CreateSesIdentity
+      - !GetAtt SesDomainIdentity.DkimDNSTokenName2
+      - 'identity already exists'
+  DkimRecord2Value:
+    Value: !If
+      - CreateSesIdentity
+      - !GetAtt SesDomainIdentity.DkimDNSTokenValue2
+      - 'identity already exists'
+  DkimRecord3Name:
+    Description: DKIM CNAME 3 name
+    Value: !If
+      - CreateSesIdentity
+      - !GetAtt SesDomainIdentity.DkimDNSTokenName3
+      - 'identity already exists'
+  DkimRecord3Value:
+    Value: !If
+      - CreateSesIdentity
+      - !GetAtt SesDomainIdentity.DkimDNSTokenValue3
+      - 'identity already exists'
+  MxRecordTarget:
+    Description: MX record target for the email domain
+    Value: !Sub '10 inbound-smtp.${AWS::Region}.amazonaws.com'

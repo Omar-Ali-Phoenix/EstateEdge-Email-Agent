@@ -1,0 +1,18 @@
+# Generated or sensitive files that must never be committed
+deployment.config
+build/
+.aws-sam/
+.env
+web/config.js
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# OS / editor noise
+.DS_Store
+.vscode/
+.idea/
